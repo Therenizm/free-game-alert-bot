@@ -1,0 +1,228 @@
+import json
+import requests
+import asyncio
+import schedule
+import nest_asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+nest_asyncio.apply()  # Pydroid için gerekli
+
+TOKEN = "YOUR_TOKEN"  # Bot tokenını buraya ekle
+
+MESSAGES = {
+    "start": {
+        "tr": "🎮 Steam + Epic İndirim Botuna Hoş Geldin!\nGünlük oyun bildirimleri sana gönderilecek.\nSadece Epic oyunlarını almak için /onlyepic yazabilirsin.",
+        "en": "🎮 Welcome to Steam + Epic Discount Bot!\nYou will receive daily game notifications.\nTo receive only Epic games notifications, type /onlyepic."
+    },
+    "onlyepic_on": {
+        "tr": "✅ Artık sadece **Epic Games** oyunlarını alacaksın.",
+        "en": "✅ You will now receive only **Epic Games** games."
+    },
+    "onlyepic_off": {
+        "tr": "🔁 Tekrar **Steam + Epic** oyunları alacaksın.",
+        "en": "🔁 You will now receive **Steam + Epic** games again."
+    },
+    "steam_deals_title": {
+        "tr": "🎮 Steam İndirimleri:",
+        "en": "🎮 Steam Deals:"
+    },
+    "epic_deals_title": {
+        "tr": "🆓 Epic Games Ücretsiz Oyunlar:",
+        "en": "🆓 Epic Games Free Games:"
+    },
+    "new_epic_game": {
+        "tr": "🆕 Yeni Ücretsiz Epic Games Oyunu:",
+        "en": "🆕 New Free Epic Games Game:"
+    },
+    "language_set": {
+        "tr": "🌐 Dil başarıyla Türkçe olarak ayarlandı.",
+        "en": "🌐 Language successfully set to English."
+    },
+    "language_usage": {
+        "tr": "⚠️ Desteklenen diller: tr, en\nKullanım: /dil tr veya /dil en",
+        "en": "⚠️ Supported languages: tr, en\nUsage: /dil tr or /dil en"
+    },
+    "yardim": {
+        "tr": (
+            "📌 Komutlar:\n"
+            "/start - Botu başlatır\n"
+            "/onlyepic - Sadece Epic oyunlarını bildir\n"
+            "/dil <tr|en> - Dil değiştir\n"
+            "/yardim - Bu yardım mesajını göster"
+        ),
+        "en": (
+            "📌 Commands:\n"
+            "/start - Start the bot\n"
+            "/onlyepic - Epic-only mode toggle\n"
+            "/dil <tr|en> - Change language\n"
+            "/yardim - Show this help message"
+        )
+    }
+}
+
+def load_users():
+    try:
+        with open("users.json", "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(users):
+    with open("users.json", "w") as f:
+        json.dump(users, f, indent=4, ensure_ascii=False)
+
+def load_last_epic_titles():
+    try:
+        with open("last_epic.json", "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_last_epic_titles(titles):
+    with open("last_epic.json", "w") as f:
+        json.dump(titles, f, indent=4, ensure_ascii=False)
+
+def get_user_language(user_id):
+    users = load_users()
+    prefs = users.get(str(user_id), {})
+    return prefs.get("language", "tr")
+
+def get_steam_deals():
+    try:
+        url = "https://store.steampowered.com/api/featuredcategories"
+        r = requests.get(url)
+        data = r.json()
+        deals = []
+        for item in data["specials"]["items"]:
+            name = item['name']
+            discount = item['discount_percent']
+            price = item['final_price'] / 100
+            link = f"https://store.steampowered.com/app/{item['id']}"
+            deals.append(f"{name} - %{discount} indirim\n{price:.2f} TL\n{link}")
+        return deals
+    except:
+        return ["Steam verisi alınamadı."]
+
+def get_epic_deals():
+    url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US"
+    r = requests.get(url)
+    data = r.json()
+    games = data["data"]["Catalog"]["searchStore"]["elements"]
+    epic_free = []
+
+    for game in games:
+        title = game["title"]
+        offers = game.get("promotions", {}).get("promotionalOffers", [])
+        if offers:
+            promo = offers[0]["promotionalOffers"][0]
+            start = promo["startDate"]
+            end = promo["endDate"]
+            slug = game.get("productSlug") or game.get("catalogNs", {}).get("mappings", [{}])[0].get("pageSlug", "")
+            link = f"https://store.epicgames.com/p/{slug}"
+            epic_free.append(f"{title}\nÜcretsiz → {link}\nGeçerli: {start[:10]} - {end[:10]}")
+    return epic_free
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    users = load_users()
+    if user_id not in users:
+        users[user_id] = {"only_epic": False, "language": "tr"}
+        save_users(users)
+    lang = get_user_language(user_id)
+    await update.message.reply_text(MESSAGES["start"][lang])
+
+async def only_epic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    users = load_users()
+    if user_id not in users:
+        users[user_id] = {"only_epic": False, "language": "tr"}
+    current = users[user_id]["only_epic"]
+    users[user_id]["only_epic"] = not current
+    save_users(users)
+    lang = get_user_language(user_id)
+
+    if users[user_id]["only_epic"]:
+        await update.message.reply_text(MESSAGES["onlyepic_on"][lang])
+    else:
+        await update.message.reply_text(MESSAGES["onlyepic_off"][lang])
+
+async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    users = load_users()
+    if user_id not in users:
+        users[user_id] = {"only_epic": False, "language": "tr"}
+
+    if context.args:
+        lang = context.args[0].lower()
+        if lang in ["tr", "en"]:
+            users[user_id]["language"] = lang
+            save_users(users)
+            await update.message.reply_text(MESSAGES["language_set"][lang])
+        else:
+            await update.message.reply_text(MESSAGES["language_usage"]["tr"])
+    else:
+        await update.message.reply_text(MESSAGES["language_usage"]["tr"])
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
+    await update.message.reply_text(MESSAGES["yardim"][lang])
+
+async def send_daily_deals(app):
+    steam_deals = get_steam_deals()
+    epic_deals = get_epic_deals()
+    users = load_users()
+
+    for uid, prefs in users.items():
+        try:
+            lang = prefs.get("language", "tr")
+            text_parts = []
+            if not prefs.get("only_epic", False):
+                steam_text = "\n\n".join(steam_deals[:5])
+                text_parts.append(f"{MESSAGES['steam_deals_title'][lang]}\n{steam_text}")
+            epic_text = "\n\n".join(epic_deals[:5])
+            text_parts.append(f"{MESSAGES['epic_deals_title'][lang]}\n{epic_text}")
+            full_message = "\n\n".join(text_parts)
+            await app.bot.send_message(chat_id=uid, text=full_message)
+        except Exception as e:
+            print(f"Hata kullanıcı {uid} mesaj gönderilirken: {e}")
+            continue
+
+async def send_epic_alerts(app):
+    current_games = get_epic_deals()
+    current_titles = [g.split("\n")[0] for g in current_games]
+    old_titles = load_last_epic_titles()
+    new_titles = list(set(current_titles) - set(old_titles))
+
+    if new_titles:
+        users = load_users()
+        for uid, prefs in users.items():
+            if prefs.get("only_epic", False):
+                try:
+                    lang = prefs.get("language", "tr")
+                    text = f"{MESSAGES['new_epic_game'][lang]}\n\n" + "\n".join(new_titles)
+                    await app.bot.send_message(chat_id=uid, text=text)
+                except Exception as e:
+                    print(f"Hata kullanıcı {uid} anlık Epic bildirimi gönderilirken: {e}")
+                    continue
+        save_last_epic_titles(current_titles)
+
+async def scheduler(app):
+    schedule.every().day.at("12:00").do(lambda: asyncio.create_task(send_daily_deals(app)))
+    schedule.every(30).minutes.do(lambda: asyncio.create_task(send_epic_alerts(app)))
+    while True:
+        schedule.run_pending()
+        await asyncio.sleep(60)
+
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("onlyepic", only_epic))
+    app.add_handler(CommandHandler("dil", change_language))
+    app.add_handler(CommandHandler("yardim", help_command))  # DÜZELTİLMİŞ KOMUT
+    asyncio.create_task(scheduler(app))
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
